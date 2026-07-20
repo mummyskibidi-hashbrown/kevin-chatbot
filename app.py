@@ -3,6 +3,7 @@ from groq import Groq
 from openai import OpenAI
 import replicate
 import base64
+from duckduckgo_search import DDGS
 
 # Page setup
 st.set_page_config(page_title="Kevin's AI Chatbot", layout="centered")
@@ -109,6 +110,15 @@ for message in st.session_state.messages:
         if "video_url" in message:
             st.video(message["video_url"])
 
+# Helper function for web search
+def search_web(query):
+    try:
+        with DDGS() as ddgs:
+            results = [r['body'] for r in ddgs.text(query, max_results=3)]
+            return "\n".join(results)
+    except Exception:
+        return ""
+
 # User message input
 if prompt := st.chat_input("Type a message, or ask to generate an image/video..."):
     if not groq_api_key:
@@ -178,12 +188,24 @@ if prompt := st.chat_input("Type a message, or ask to generate an image/video...
                 except Exception as e:
                     st.error(f"Image generation error: {e}")
     else:
-        # Standard Groq Text Generation with Combined System Prompt + Language Instruction
+        # Standard Groq Text Generation with Web Search & System Prompts
         with st.chat_message("assistant"):
             try:
+                # Check if prompt requires web lookup (e.g. recent events, winners, scores)
+                search_keywords = ["winner", "who won", "score", "news", "latest", "current", "2026", "result", "match"]
+                should_search = any(kw in prompt_lower for kw in search_keywords)
+                
+                search_context = ""
+                if should_search:
+                    with st.spinner("Searching the web..."):
+                        search_context = search_web(prompt)
+                
                 client = Groq(api_key=groq_api_key)
                 
                 system_content = f"{PERSONAS[persona_option]} {LANGUAGES[language_option]}"
+                if search_context:
+                    system_content += f"\n\nLive web search results to help answer the user:\n{search_context}"
+
                 api_messages = [{"role": "system", "content": system_content}]
                 
                 for m in st.session_state.messages:
