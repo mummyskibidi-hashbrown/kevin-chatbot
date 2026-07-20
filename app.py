@@ -160,10 +160,7 @@ with st.sidebar:
         st.subheader("Mode and Behavior")
         persona_choice = st.selectbox("Mode / Persona", list(PERSONAS.keys()))
         language_choice = st.selectbox("Response Language", list(LANGUAGES.keys()))
-        # TO THIS:
-model_choice = st.selectbox(
-    "Model Version", ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash")
-)
+        model_choice = st.selectbox("Model Version", ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"))
 
     # TAB 4: Instructions
     with tab_instructions:
