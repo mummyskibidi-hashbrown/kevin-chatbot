@@ -167,4 +167,4 @@ with st.sidebar:
         for chat_name in list(st.session_state.chats.keys()):
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
-                is_active = (chat_name == st.session_state.active_chat
+                is_active = (chat_name == st.session_state.active_chat)
