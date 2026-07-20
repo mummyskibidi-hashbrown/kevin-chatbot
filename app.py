@@ -5,6 +5,7 @@ import io
 import replicate
 import base64
 import re
+import pypdf
 from duckduckgo_search import DDGS
 from tavily import TavilyClient
 
@@ -142,12 +143,12 @@ with st.sidebar:
                         st.session_state.active_chat = list(st.session_state.chats.keys())[0]
                         st.rerun()
 
-    # TAB 2: File Attachment
+    # TAB 2: File & Image Attachment
     with tab_upload:
-        st.subheader("Attach File")
+        st.subheader("Attach File or Image")
         uploaded_file = st.file_uploader(
-            "Upload code or document file",
-            type=["py", "txt", "csv", "json", "md", "js", "html", "css", "cpp", "c", "java", "pdf"]
+            "Upload image (PNG/JPG), PDF, or code document",
+            type=["png", "jpg", "jpeg", "pdf", "py", "txt", "csv", "json", "md", "js", "html", "css", "cpp", "c", "java"]
         )
 
     # TAB 3: Setup (API Keys & Model Parameters)
@@ -162,7 +163,7 @@ with st.sidebar:
         language_choice = st.selectbox("Response Language", list(LANGUAGES.keys()))
         model_choice = st.selectbox(
             "Model Version",
-            ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768")
+            ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-3.2-11b-vision-instruct", "mixtral-8x7b-32768")
         )
 
     # TAB 4: Instructions
@@ -172,7 +173,8 @@ with st.sidebar:
         st.markdown("1. Get a **free** API key at **console.groq.com**.")
         st.markdown("2. Go to the **Setup** tab and enter your **Groq API Key**.")
         st.markdown("3. Select a persona mode (e.g., **Coding Mode**).")
-        st.markdown("4. Type a message in the main chat prompt below.")
+        st.markdown("4. Attach PDF documents or images (PNG/JPG) in the **Attachments** tab.")
+        st.markdown("5. Type a message in the main chat prompt below.")
 
 # Get current chat history
 current_messages = st.session_state.chats[st.session_state.active_chat]
@@ -206,20 +208,59 @@ if prompt := st.chat_input("Type a message or ask to write/debug code..."):
         st.info("Please enter your free Groq API key in the sidebar under Setup to begin.")
         st.stop()
 
-    # Parse attached file content
+    # Parse attached files and images
     file_context_str = ""
+    image_payload = None
+
     if uploaded_file is not None:
-        try:
-            file_bytes = uploaded_file.getvalue()
-            text_content = file_bytes.decode('utf-8', errors='ignore')
-            fence = "```"
-            file_context_str = (
-                f"\n\n--- ATTACHED FILE ({uploaded_file.name}) ---\n"
-                f"{fence}\n" + text_content + f"\n{fence}\n--- END FILE ---"
-            )
-            prompt_display = f"[Attached File: {uploaded_file.name}]\n\n{prompt}"
-        except Exception:
-            prompt_display = prompt
+        file_bytes = uploaded_file.getvalue()
+        file_name = uploaded_file.name
+        file_ext = file_name.split(".")[-1].lower()
+
+        # Handle Images (PNG, JPG, JPEG)
+        if file_ext in ["png", "jpg", "jpeg"]:
+            mime_type = uploaded_file.type if uploaded_file.type else f"image/{file_ext}"
+            base64_image = base64.b64encode(file_bytes).decode("utf-8")
+            image_payload = {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{base64_image}"
+                }
+            }
+            prompt_display = f"[Attached Image: {file_name}]\n\n{prompt}"
+
+        # Handle PDF Documents
+        elif file_ext == "pdf":
+            try:
+                pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+                pdf_text = ""
+                for page_num, page in enumerate(pdf_reader.pages, start=1):
+                    extracted = page.extract_text()
+                    if extracted:
+                        pdf_text += f"\n--- Page {page_num} ---\n" + extracted
+                
+                fence = "```"
+                file_context_str = (
+                    f"\n\n--- ATTACHED PDF ({file_name}) ---\n"
+                    f"{fence}\n{pdf_text}\n{fence}\n--- END PDF ---"
+                )
+                prompt_display = f"[Attached PDF: {file_name}]\n\n{prompt}"
+            except Exception as e:
+                st.error(f"Error reading PDF file: {e}")
+                prompt_display = prompt
+
+        # Handle Source Code / Plain Text Files
+        else:
+            try:
+                text_content = file_bytes.decode('utf-8', errors='ignore')
+                fence = "```"
+                file_context_str = (
+                    f"\n\n--- ATTACHED FILE ({file_name}) ---\n"
+                    f"{fence}\n" + text_content + f"\n{fence}\n--- END FILE ---"
+                )
+                prompt_display = f"[Attached File: {file_name}]\n\n{prompt}"
+            except Exception:
+                prompt_display = prompt
     else:
         prompt_display = prompt
 
@@ -270,17 +311,31 @@ if prompt := st.chat_input("Type a message or ask to write/debug code..."):
                 if search_context:
                     sys_prompt += f"\n\nLive Search Reference Data:\n{search_context}"
 
+                # Auto-select Vision Model if an image was uploaded
+                active_model = model_choice
+                if image_payload and "vision" not in model_choice.lower():
+                    active_model = "llama-3.2-11b-vision-instruct"
+
                 # Format payload for Groq
                 groq_messages = [{"role": "system", "content": sys_prompt}]
                 for m in current_messages[:-1]:
                     groq_messages.append({"role": m["role"], "content": m["content"]})
 
-                final_user_text = prompt + file_context_str
-                groq_messages.append({"role": "user", "content": final_user_text})
+                # Format current prompt content
+                final_text = prompt + file_context_str
+                if image_payload:
+                    user_content = [
+                        {"type": "text", "text": final_text},
+                        image_payload
+                    ]
+                else:
+                    user_content = final_text
+
+                groq_messages.append({"role": "user", "content": user_content})
 
                 # Stream response from Groq
                 response = client.chat.completions.create(
-                    model=model_choice,
+                    model=active_model,
                     messages=groq_messages,
                     stream=True
                 )
