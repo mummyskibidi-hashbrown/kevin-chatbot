@@ -16,10 +16,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Custom CSS - Square / Angular Design
+# 2. Custom CSS - Square / Angular Design System
 st.markdown("""
 <style>
-    /* Sharp, square design system */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 3rem;
@@ -87,7 +86,7 @@ LANGUAGES = {
     "Japanese": "Respond strictly in Japanese."
 }
 
-# 6. Helper Functions
+# 6. Helper Functions & Search Optimizer
 def extract_code_from_text(text):
     """Extracts code blocks from markdown text for downloading."""
     fence = "```"
@@ -95,11 +94,48 @@ def extract_code_from_text(text):
     matches = re.findall(pattern, text, re.DOTALL)
     return "\n\n# --- Next Code Block ---\n\n".join(matches) if matches else None
 
-def fetch_web_results(query, tavily_key=""):
+ACRONYMS = {
+    r"\bwc\b": "world cup",
+    r"\bucl\b": "uefa champions league",
+    r"\bepl\b": "premier league",
+    r"\bnba\b": "nba finals",
+    r"\bnfl\b": "super bowl",
+    r"\bmlb\b": "world series"
+}
+
+def optimize_search_query(query, chat_history=[]):
+    """Expands short acronyms and enriches short/vague prompts with chat context."""
+    clean_q = query.lower()
+
+    # Expand common sports/event acronyms
+    for pattern, replacement in ACRONYMS.items():
+        clean_q = re.sub(pattern, replacement, clean_q)
+
+    # Attach history context for short follow-up queries (< 5 words)
+    if len(clean_q.split()) <= 5 and chat_history:
+        past_user_msgs = [m["content"] for m in chat_history if m["role"] == "user"]
+        if past_user_msgs:
+            last_msg = past_user_msgs[-1]
+            if "]\n\n" in last_msg:
+                last_msg = last_msg.split("]\n\n")[-1]
+            for pattern, replacement in ACRONYMS.items():
+                last_msg = re.sub(pattern, replacement, last_msg, flags=re.IGNORECASE)
+            clean_q = f"{last_msg} {clean_q}"
+
+    # Auto-add recent year anchor if asking for winners/results without a specified year
+    if any(w in clean_q for w in ["winner", "won", "champion", "world cup", "finals", "champions league"]) and not re.search(r"\b202\d\b", clean_q):
+        clean_q += " 2026"
+
+    return clean_q.strip()
+
+def fetch_web_results(query, chat_history=[], tavily_key=""):
+    """Fetches real-time web results using optimized search strings."""
+    optimized_q = optimize_search_query(query, chat_history)
+
     if tavily_key:
         try:
             tavily = TavilyClient(api_key=tavily_key)
-            res = tavily.search(query=query, max_results=3, search_depth="basic")
+            res = tavily.search(query=optimized_q, max_results=4, search_depth="basic")
             results = res.get("results", [])
             if results:
                 return "\n".join([f"* {r.get('title')}: {r.get('content')} ({r.get('url')})" for r in results])
@@ -108,12 +144,12 @@ def fetch_web_results(query, tavily_key=""):
 
     try:
         with DDGS() as ddgs:
-            raw = [r['body'] for r in ddgs.text(query, max_results=3)]
+            raw = [r['body'] for r in ddgs.text(optimized_q, max_results=4)]
             return "\n".join(raw) if raw else ""
     except Exception:
         return ""
 
-# 7. Sidebar
+# 7. Sidebar Control Panel
 with st.sidebar:
     st.title("Control Panel")
     tab_chats, tab_upload, tab_setup, tab_instructions = st.tabs(["Recent Chats", "Attachments", "Setup", "Instructions"])
@@ -131,234 +167,4 @@ with st.sidebar:
         for chat_name in list(st.session_state.chats.keys()):
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
-                is_active = (chat_name == st.session_state.active_chat)
-                btn_label = f"**{chat_name}**" if is_active else chat_name
-                if st.button(btn_label, key=f"sel_{chat_name}", use_container_width=True):
-                    st.session_state.active_chat = chat_name
-                    st.rerun()
-            with col2:
-                if len(st.session_state.chats) > 1:
-                    if st.button("X", key=f"del_{chat_name}"):
-                        del st.session_state.chats[chat_name]
-                        st.session_state.active_chat = list(st.session_state.chats.keys())[0]
-                        st.rerun()
-
-    # TAB 2: File & Image Attachment
-    with tab_upload:
-        st.subheader("Attach File or Image")
-        uploaded_file = st.file_uploader(
-            "Upload image (PNG/JPG), PDF, or code document",
-            type=["png", "jpg", "jpeg", "pdf", "py", "txt", "csv", "json", "md", "js", "html", "css", "cpp", "c", "java"]
-        )
-
-    # TAB 3: Setup (API Keys & Model Parameters)
-    with tab_setup:
-        st.subheader("Authentication")
-        groq_api_key = st.text_input("Groq API Key (Free)", type="password", placeholder="gsk_...")
-        tavily_api_key = st.text_input("Tavily API Key (Optional Search)", type="password", placeholder="tvly-...")
-        replicate_api_token = st.text_input("Replicate Token (Optional Video)", type="password", placeholder="r8_...")
-
-        st.subheader("Mode and Behavior")
-        persona_choice = st.selectbox("Mode / Persona", list(PERSONAS.keys()))
-        language_choice = st.selectbox("Response Language", list(LANGUAGES.keys()))
-        model_choice = st.selectbox(
-            "Model Version",
-            ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-3.2-11b-vision-instruct", "mixtral-8x7b-32768")
-        )
-
-    # TAB 4: Instructions
-    with tab_instructions:
-        st.subheader("System Instructions")
-        st.markdown("**Getting Started:**")
-        st.markdown("1. Get a **free** API key at **console.groq.com**.")
-        st.markdown("2. Go to the **Setup** tab and enter your **Groq API Key**.")
-        st.markdown("3. Select a persona mode (e.g., **Coding Mode**).")
-        st.markdown("4. Attach PDF documents or images (PNG/JPG) in the **Attachments** tab.")
-        st.markdown("5. Type a message in the main chat prompt below.")
-
-# Get current chat history
-current_messages = st.session_state.chats[st.session_state.active_chat]
-
-# 8. Main Chat Interface Header
-st.title("Kevin's Chatbot")
-st.caption(f"Active Session: **{st.session_state.active_chat}** | Mode: **{persona_choice}** | Model: **{model_choice}**")
-
-# Display Message History for Active Chat
-for idx, msg in enumerate(current_messages):
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "video_url" in msg:
-            st.video(msg["video_url"])
-        
-        # Display Code Download Button if message contains code
-        if msg["role"] == "assistant":
-            extracted_code = extract_code_from_text(msg["content"])
-            if extracted_code:
-                st.download_button(
-                    label="Download Generated Code",
-                    data=extracted_code,
-                    file_name="script.py",
-                    mime="text/x-python",
-                    key=f"dl_hist_{idx}"
-                )
-
-# 9. Process User Input & File Uploads
-if prompt := st.chat_input("Type a message or ask to write/debug code..."):
-    if not groq_api_key:
-        st.info("Please enter your free Groq API key in the sidebar under Setup to begin.")
-        st.stop()
-
-    # Parse attached files and images
-    file_context_str = ""
-    image_payload = None
-
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        file_name = uploaded_file.name
-        file_ext = file_name.split(".")[-1].lower()
-
-        # Handle Images (PNG, JPG, JPEG)
-        if file_ext in ["png", "jpg", "jpeg"]:
-            mime_type = uploaded_file.type if uploaded_file.type else f"image/{file_ext}"
-            base64_image = base64.b64encode(file_bytes).decode("utf-8")
-            image_payload = {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime_type};base64,{base64_image}"
-                }
-            }
-            prompt_display = f"[Attached Image: {file_name}]\n\n{prompt}"
-
-        # Handle PDF Documents
-        elif file_ext == "pdf":
-            try:
-                pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-                pdf_text = ""
-                for page_num, page in enumerate(pdf_reader.pages, start=1):
-                    extracted = page.extract_text()
-                    if extracted:
-                        pdf_text += f"\n--- Page {page_num} ---\n" + extracted
-                
-                fence = "```"
-                file_context_str = (
-                    f"\n\n--- ATTACHED PDF ({file_name}) ---\n"
-                    f"{fence}\n{pdf_text}\n{fence}\n--- END PDF ---"
-                )
-                prompt_display = f"[Attached PDF: {file_name}]\n\n{prompt}"
-            except Exception as e:
-                st.error(f"Error reading PDF file: {e}")
-                prompt_display = prompt
-
-        # Handle Source Code / Plain Text Files
-        else:
-            try:
-                text_content = file_bytes.decode('utf-8', errors='ignore')
-                fence = "```"
-                file_context_str = (
-                    f"\n\n--- ATTACHED FILE ({file_name}) ---\n"
-                    f"{fence}\n" + text_content + f"\n{fence}\n--- END FILE ---"
-                )
-                prompt_display = f"[Attached File: {file_name}]\n\n{prompt}"
-            except Exception:
-                prompt_display = prompt
-    else:
-        prompt_display = prompt
-
-    # Save User Message to Current Active Chat
-    current_messages.append({"role": "user", "content": prompt_display})
-    with st.chat_message("user"):
-        st.markdown(prompt_display)
-
-    prompt_low = prompt.lower()
-    is_video = any(kw in prompt_low for kw in ["generate video", "make a video", "animate"])
-
-    # Option A: Video Generation (via Replicate)
-    if is_video and replicate_api_token:
-        with st.chat_message("assistant"):
-            with st.spinner("Rendering video (30-60s)..."):
-                try:
-                    import os
-                    os.environ["REPLICATE_API_TOKEN"] = replicate_api_token
-                    output = replicate.run(
-                        "kwaivgi/kling-v1.6-standard",
-                        input={"prompt": prompt, "duration": 5}
-                    )
-                    url = output[0] if isinstance(output, list) else output
-                    text = f"Generated video for: *{prompt}*"
-                    st.markdown(text)
-                    st.video(url)
-                    current_messages.append({"role": "assistant", "content": text, "video_url": url})
-                except Exception as e:
-                    st.error(f"Failed to generate video: {e}")
-
-    # Option B: Chat Response via Groq API
-    else:
-        with st.chat_message("assistant"):
-            try:
-                # Web Search Context
-                keywords = ["latest", "news", "who won", "score", "current", "2026", "today"]
-                needs_search = any(kw in prompt_low for kw in keywords)
-                search_context = ""
-                
-                if needs_search:
-                    with st.spinner("Checking live sources..."):
-                        search_context = fetch_web_results(prompt, tavily_key=tavily_api_key)
-
-                # Configure Groq Client
-                client = Groq(api_key=groq_api_key)
-                
-                sys_prompt = f"{PERSONAS[persona_choice]} {LANGUAGES[language_choice]}\nSystem Year: 2026."
-                if search_context:
-                    sys_prompt += f"\n\nLive Search Reference Data:\n{search_context}"
-
-                # Auto-select Vision Model if an image was uploaded
-                active_model = model_choice
-                if image_payload and "vision" not in model_choice.lower():
-                    active_model = "llama-3.2-11b-vision-instruct"
-
-                # Format payload for Groq
-                groq_messages = [{"role": "system", "content": sys_prompt}]
-                for m in current_messages[:-1]:
-                    groq_messages.append({"role": m["role"], "content": m["content"]})
-
-                # Format current prompt content
-                final_text = prompt + file_context_str
-                if image_payload:
-                    user_content = [
-                        {"type": "text", "text": final_text},
-                        image_payload
-                    ]
-                else:
-                    user_content = final_text
-
-                groq_messages.append({"role": "user", "content": user_content})
-
-                # Stream response from Groq
-                response = client.chat.completions.create(
-                    model=active_model,
-                    messages=groq_messages,
-                    stream=True
-                )
-                
-                def stream_gen():
-                    for chunk in response:
-                        content = chunk.choices[0].delta.content
-                        if content:
-                            yield content
-
-                output_text = st.write_stream(stream_gen)
-                current_messages.append({"role": "assistant", "content": output_text})
-
-                # Display download button immediately if response contained code
-                extracted_code = extract_code_from_text(output_text)
-                if extracted_code:
-                    st.download_button(
-                        label="Download Generated Code",
-                        data=extracted_code,
-                        file_name="script.py",
-                        mime="text/x-python",
-                        key=f"dl_live_{len(current_messages)}"
-                    )
-
-            except Exception as e:
-                st.error(f"Groq API Error: {e}")
+                is_active = (chat_name == st.session_state.active_chat
