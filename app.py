@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+from groq import Groq
 from PIL import Image
 import io
 import replicate
@@ -51,7 +51,7 @@ def show_disclaimer_modal():
         "Welcome. This application is an experimental preview currently in active development.\n\n"
         "**Please review before continuing:**\n"
         "* **Accuracy:** AI outputs can be wrong, outdated, or fabricated. Always double-check code and facts.\n"
-        "* **Web Search and Vision:** Search results and file parsing rely on automated external services.\n\n"
+        "* **Web Search:** Search results and file parsing rely on automated external services.\n\n"
         "Verify critical information against primary documentation."
     )
     st.markdown("---")
@@ -142,60 +142,49 @@ with st.sidebar:
                         st.session_state.active_chat = list(st.session_state.chats.keys())[0]
                         st.rerun()
 
-    # TAB 2: File & Image Attachment
+    # TAB 2: File Attachment
     with tab_upload:
-        st.subheader("Attach File or Image")
+        st.subheader("Attach File")
         uploaded_file = st.file_uploader(
-            "Upload image, code, or document",
-            type=["png", "jpg", "jpeg", "py", "txt", "csv", "json", "md", "js", "html", "css", "cpp", "c", "java", "pdf"]
+            "Upload code or document file",
+            type=["py", "txt", "csv", "json", "md", "js", "html", "css", "cpp", "c", "java", "pdf"]
         )
 
     # TAB 3: Setup (API Keys & Model Parameters)
     with tab_setup:
         st.subheader("Authentication")
-        gemini_api_key = st.text_input("Gemini API Key (Free)", type="password", placeholder="AIzaSy...")
-        tavily_api_key = st.text_input("Tavily API Key (Optional for Real-Time Search)", type="password", placeholder="tvly-...")
-        replicate_api_token = st.text_input("Replicate Token (Optional)", type="password", placeholder="r8_...")
+        groq_api_key = st.text_input("Groq API Key (Free)", type="password", placeholder="gsk_...")
+        tavily_api_key = st.text_input("Tavily API Key (Optional Search)", type="password", placeholder="tvly-...")
+        replicate_api_token = st.text_input("Replicate Token (Optional Video)", type="password", placeholder="r8_...")
 
         st.subheader("Mode and Behavior")
         persona_choice = st.selectbox("Mode / Persona", list(PERSONAS.keys()))
         language_choice = st.selectbox("Response Language", list(LANGUAGES.keys()))
-        model_choice = st.selectbox("Model Version", ("gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"))
+        model_choice = st.selectbox(
+            "Model Version",
+            ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768")
+        )
 
     # TAB 4: Instructions
     with tab_instructions:
         st.subheader("System Instructions")
         st.markdown("**Getting Started:**")
-        st.markdown("1. Get a **free** API key at **aistudio.google.com** (no credit card needed).")
-        st.markdown("2. Go to the **Setup** tab and enter your **Gemini API Key**.")
-        st.markdown("3. Enter your **Tavily API Key** if you wish to enable real-time web searching capabilities.")
-        st.markdown("4. Select a persona mode (e.g., **Coding Mode** for technical assistance).")
-        st.markdown("5. Type a message in the main chat prompt below.")
-        
-        st.markdown("**Key Features:**")
-        st.markdown("* **100% Free API:** Uses Google Gemini free tier.")
-        st.markdown("* **Real-Time Web Search:** Uses Tavily API to fetch current online information automatically.")
-        st.markdown("* **Coding Mode:** Generates formatted code blocks with an automatic **Download Code** button.")
-        st.markdown("* **File Analysis:** Upload source files or images in the **Attachments** tab before submitting your prompt.")
-        st.markdown("* **Recent Chats:** Manage multiple chat threads in the **Recent Chats** tab.")
-
-        st.markdown("**Increasing Upload File Size Limit:**")
-        st.markdown("To allow uploads larger than Streamlit's default 200MB limit, create or edit `.streamlit/config.toml` in your project folder:")
-        st.code("[server]\nmaxUploadSize = 500", language="toml")
+        st.markdown("1. Get a **free** API key at **console.groq.com**.")
+        st.markdown("2. Go to the **Setup** tab and enter your **Groq API Key**.")
+        st.markdown("3. Select a persona mode (e.g., **Coding Mode**).")
+        st.markdown("4. Type a message in the main chat prompt below.")
 
 # Get current chat history
 current_messages = st.session_state.chats[st.session_state.active_chat]
 
 # 8. Main Chat Interface Header
 st.title("Kevin's Chatbot")
-st.caption(f"Active Session: **{st.session_state.active_chat}** | Mode: **{persona_choice}**")
+st.caption(f"Active Session: **{st.session_state.active_chat}** | Mode: **{persona_choice}** | Model: **{model_choice}**")
 
 # Display Message History for Active Chat
 for idx, msg in enumerate(current_messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if "image_bytes" in msg:
-            st.image(msg["image_bytes"])
         if "video_url" in msg:
             st.video(msg["video_url"])
         
@@ -213,35 +202,24 @@ for idx, msg in enumerate(current_messages):
 
 # 9. Process User Input & File Uploads
 if prompt := st.chat_input("Type a message or ask to write/debug code..."):
-    if not gemini_api_key:
-        st.info("Please enter your free Gemini API key in the sidebar under Setup to begin.")
+    if not groq_api_key:
+        st.info("Please enter your free Groq API key in the sidebar under Setup to begin.")
         st.stop()
 
     # Parse attached file content
     file_context_str = ""
-    pil_image = None
-
     if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        file_type = uploaded_file.type
-        
-        if "image" in file_type or uploaded_file.name.endswith(('.png', '.jpg', '.jpeg')):
-            try:
-                pil_image = Image.open(io.BytesIO(file_bytes))
-                prompt_display = f"[Attached Image: {uploaded_file.name}]\n\n{prompt}"
-            except Exception:
-                prompt_display = prompt
-        else:
-            try:
-                text_content = file_bytes.decode('utf-8', errors='ignore')
-                fence = "```"
-                file_context_str = (
-                    f"\n\n--- ATTACHED FILE ({uploaded_file.name}) ---\n"
-                    f"{fence}\n" + text_content + f"\n{fence}\n--- END FILE ---"
-                )
-                prompt_display = f"[Attached File: {uploaded_file.name}]\n\n{prompt}"
-            except Exception:
-                prompt_display = prompt
+        try:
+            file_bytes = uploaded_file.getvalue()
+            text_content = file_bytes.decode('utf-8', errors='ignore')
+            fence = "```"
+            file_context_str = (
+                f"\n\n--- ATTACHED FILE ({uploaded_file.name}) ---\n"
+                f"{fence}\n" + text_content + f"\n{fence}\n--- END FILE ---"
+            )
+            prompt_display = f"[Attached File: {uploaded_file.name}]\n\n{prompt}"
+        except Exception:
+            prompt_display = prompt
     else:
         prompt_display = prompt
 
@@ -272,7 +250,7 @@ if prompt := st.chat_input("Type a message or ask to write/debug code..."):
                 except Exception as e:
                     st.error(f"Failed to generate video: {e}")
 
-    # Option B: Chat & Vision Response via Gemini API
+    # Option B: Chat Response via Groq API
     else:
         with st.chat_message("assistant"):
             try:
@@ -285,39 +263,33 @@ if prompt := st.chat_input("Type a message or ask to write/debug code..."):
                     with st.spinner("Checking live sources..."):
                         search_context = fetch_web_results(prompt, tavily_key=tavily_api_key)
 
-                # Configure Gemini
-                genai.configure(api_key=gemini_api_key)
+                # Configure Groq Client
+                client = Groq(api_key=groq_api_key)
                 
                 sys_prompt = f"{PERSONAS[persona_choice]} {LANGUAGES[language_choice]}\nSystem Year: 2026."
                 if search_context:
                     sys_prompt += f"\n\nLive Search Reference Data:\n{search_context}"
 
-                model = genai.GenerativeModel(
-                    model_name=model_choice,
-                    system_instruction=sys_prompt
-                )
-
-                # Convert history to Gemini format (user / model)
-                contents = []
+                # Format payload for Groq
+                groq_messages = [{"role": "system", "content": sys_prompt}]
                 for m in current_messages[:-1]:
-                    role = "user" if m["role"] == "user" else "model"
-                    contents.append({"role": role, "parts": [m["content"]]})
+                    groq_messages.append({"role": m["role"], "content": m["content"]})
 
-                # Build final payload
                 final_user_text = prompt + file_context_str
-                final_parts = [final_user_text]
-                if pil_image:
-                    final_parts.append(pil_image)
+                groq_messages.append({"role": "user", "content": final_user_text})
 
-                contents.append({"role": "user", "parts": final_parts})
-
-                # Stream response
-                response = model.generate_content(contents, stream=True)
+                # Stream response from Groq
+                response = client.chat.completions.create(
+                    model=model_choice,
+                    messages=groq_messages,
+                    stream=True
+                )
                 
                 def stream_gen():
                     for chunk in response:
-                        if chunk.text:
-                            yield chunk.text
+                        content = chunk.choices[0].delta.content
+                        if content:
+                            yield content
 
                 output_text = st.write_stream(stream_gen)
                 current_messages.append({"role": "assistant", "content": output_text})
@@ -334,4 +306,4 @@ if prompt := st.chat_input("Type a message or ask to write/debug code..."):
                     )
 
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Groq API Error: {e}")
